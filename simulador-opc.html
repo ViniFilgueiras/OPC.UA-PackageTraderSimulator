@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Simulador OPC-UA — Servidor, Clientes e Lógica Ladder</title>
+<style>
+/* ===========================================================
+   Tema: posto de supervisão / sala de controle SCADA.
+   Painel escuro azul-petróleo, traços de cobre nas trilhas de
+   energia do ladder e verde-fósforo nos nós OPC ativos.
+   Tipografia: display condensada industrial + mono de terminal.
+   =========================================================== */
+:root{
+  --bg:        #0e1419;
+  --bg-2:      #131c23;
+  --panel:     #18242d;
+  --panel-2:   #1d2c37;
+  --line:      #2a3b47;
+  --line-soft: #213039;
+  --ink:       #e9f1f4;
+  --ink-soft:  #8ba0ad;
+  --ink-dim:   #5d7280;
+  --copper:    #e08a3c;   /* trilho energizado / barramento */
+  --copper-dim:#5a4026;
+  --phos:      #4fe39b;   /* nó OPC ativo / contato fechado */
+  --phos-dim:  #1f5740;
+  --ice:       #56c5e8;   /* cliente / subscription */
+  --ice-dim:   #1d4658;
+  --amber:     #f2c14e;   /* sensor real */
+  --red:       #ff6b6b;
+  --violet:    #b48cff;   /* cliente alarme */
+  --mono: "JetBrains Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace;
+  --cond: "Oswald","Arial Narrow",system-ui,sans-serif;
+  --sans: "Inter",system-ui,-apple-system,sans-serif;
+}
+
+*{ box-sizing:border-box; }
+html,body{ margin:0; }
+body{
+  background:
+    radial-gradient(1100px 520px at 78% -8%, #16242e 0%, transparent 62%),
+    radial-gradient(900px 480px at 10% 110%, #14202a 0%, transparent 58%),
+    var(--bg);
+  color:var(--ink);
+  font-family:var(--sans);
+  min-height:100vh;
+  padding-bottom:2.4rem;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ---------- topo ---------- */
+.topbar{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:.85rem 1.4rem;
+  border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg,var(--bg-2),rgba(19,28,35,.4));
+  position:sticky; top:0; z-index:50;
+  backdrop-filter:blur(6px);
+}
+.brand{ display:flex; align-items:center; gap:.7rem; }
+.brand .live{
+  width:10px; height:10px; border-radius:50%;
+  background:var(--phos); box-shadow:0 0 12px var(--phos);
+  animation:beat 1.6s infinite;
+}
+@keyframes beat{ 50%{ opacity:.3; transform:scale(.82);} }
+.brand h1{
+  font-family:var(--cond); font-weight:600; font-size:1.3rem;
+  letter-spacing:3px; margin:0; text-transform:uppercase;
+}
+.brand h1 b{ color:var(--copper); font-weight:700; }
+.brand .tagline{
+  font-family:var(--mono); font-size:.6rem; color:var(--ink-dim);
+  letter-spacing:1.5px; text-transform:uppercase; margin-top:1px;
+}
+.topbar__right{ display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; justify-content:flex-end; }
+.stat{
+  font-family:var(--mono); font-size:.66rem; color:var(--ink-soft);
+  border:1px solid var(--line); border-radius:5px; padding:.32rem .6rem;
+  display:flex; align-items:center; gap:.4rem; background:var(--bg-2);
+}
+.stat b{ color:var(--ink); font-weight:600; }
+.stat .pip{ width:7px; height:7px; border-radius:50%; background:var(--ink-dim); }
+.stat .pip.on{ background:var(--phos); box-shadow:0 0 7px var(--phos); }
+.stat .pip.warn{ background:var(--amber); box-shadow:0 0 7px var(--amber); }
+
+/* ---------- grade principal ---------- */
+.wrap{ max-width:1280px; margin:1.2rem auto 0; padding:0 1.4rem; }
+.layout{
+  display:grid;
+  grid-template-columns: 280px 1fr;
+  gap:1rem;
+  align-items:start;
+}
+
+/* ---------- coluna de clientes ---------- */
+.col-head{
+  font-family:var(--cond); text-transform:uppercase; letter-spacing:2.5px;
+  font-size:.82rem; color:var(--ink-soft); font-weight:500;
+  margin:.2rem 0 .7rem; display:flex; align-items:center; gap:.5rem;
+}
+.col-head .ix{ font-family:var(--mono); font-size:.62rem; color:var(--ink-dim); }
+
+.client{
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-left:3px solid var(--cl, var(--ice));
+  border-radius:9px;
+  padding:.7rem .8rem;
+  margin-bottom:.7rem;
+  position:relative;
+  transition:background .25s, box-shadow .25s, transform .08s;
+}
+.client.reading{
+  background:var(--panel-2);
+  box-shadow:0 0 0 1px var(--cl), 0 0 18px -4px var(--cl);
+}
+.client__top{ display:flex; align-items:center; justify-content:space-between; gap:.4rem; }
+.client__name{ font-family:var(--cond); font-weight:600; font-size:.96rem; letter-spacing:.6px; }
+.client__role{
+  font-family:var(--mono); font-size:.56rem; color:var(--ink-dim);
+  text-transform:uppercase; letter-spacing:1px; margin-top:1px;
+}
+.client__led{
+  width:9px; height:9px; border-radius:50%; flex:none;
+  background:var(--ink-dim); transition:background .15s, box-shadow .15s;
+}
+.client.reading .client__led{ background:var(--cl); box-shadow:0 0 9px var(--cl); }
+.client__sub{
+  margin-top:.55rem; display:flex; flex-direction:column; gap:.3rem;
+}
+.sub-row{
+  display:flex; align-items:center; justify-content:space-between;
+  font-family:var(--mono); font-size:.66rem;
+  padding:.2rem .35rem; border-radius:4px; background:var(--bg-2);
+  border:1px solid var(--line-soft);
+}
+.sub-row .tag{ color:var(--ink-soft); }
+.sub-row .v{ color:var(--ink); font-weight:600; }
+.sub-row.changed .v{ color:var(--cl); }
+.sub-row.changed{ animation:rowflash .6s ease; }
+@keyframes rowflash{ 0%{ background:var(--cl-dim, #1d4658);} 100%{ background:var(--bg-2);} }
+.client__hz{
+  position:absolute; right:.7rem; bottom:.55rem;
+  font-family:var(--mono); font-size:.54rem; color:var(--ink-dim);
+}
+
+/* ---------- painel central ---------- */
+.stage{ display:flex; flex-direction:column; gap:1rem; }
+
+.card{
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:11px;
+  overflow:hidden;
+}
+.card__head{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:.6rem .9rem; border-bottom:1px solid var(--line);
+  background:var(--bg-2);
+}
+.card__head h2{
+  font-family:var(--cond); text-transform:uppercase; letter-spacing:2px;
+  font-size:.9rem; font-weight:600; margin:0; color:var(--ink);
+  display:flex; align-items:center; gap:.55rem;
+}
+.card__head h2 .glyph{ color:var(--copper); font-size:1rem; }
+.card__head .meta{ font-family:var(--mono); font-size:.62rem; color:var(--ink-dim); }
+
+/* ---------- servidor OPC + address space ---------- */
+.server-body{ padding:.9rem; }
+.ns-bar{
+  display:flex; align-items:center; gap:.5rem; margin-bottom:.8rem;
+  font-family:var(--mono); font-size:.62rem; color:var(--ink-dim);
+  flex-wrap:wrap;
+}
+.ns-chip{
+  border:1px solid var(--line); border-radius:20px; padding:.18rem .6rem;
+  color:var(--ink-soft); background:var(--bg-2);
+}
+.ns-chip b{ color:var(--copper); }
+
+.nodes{
+  display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+  gap:.6rem;
+}
+.node{
+  background:var(--bg-2);
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:.6rem .65rem;
+  position:relative;
+  overflow:hidden;
+}
+.node::before{
+  content:""; position:absolute; inset:0 auto 0 0; width:3px;
+  background:var(--nc, var(--phos)); opacity:.55;
+}
+.node.write{ animation:nodewrite .7s ease; }
+@keyframes nodewrite{ 0%{ box-shadow:inset 0 0 0 1px var(--nc), 0 0 16px -3px var(--nc);} 100%{ box-shadow:none;} }
+.node__id{
+  font-family:var(--mono); font-size:.55rem; color:var(--ink-dim);
+  letter-spacing:.5px;
+}
+.node__name{ font-family:var(--cond); font-size:.86rem; font-weight:500; letter-spacing:.4px; margin:.1rem 0 .35rem; }
+.node__val{
+  font-family:var(--mono); font-weight:700; font-size:1.25rem; line-height:1;
+  color:var(--nc, var(--phos));
+}
+.node__unit{ font-size:.7rem; color:var(--ink-soft); font-weight:400; margin-left:2px; }
+.node__foot{
+  display:flex; align-items:center; justify-content:space-between;
+  margin-top:.4rem; font-family:var(--mono); font-size:.54rem; color:var(--ink-dim);
+}
+.q{ display:inline-flex; align-items:center; gap:.25rem; }
+.q .dotq{ width:6px; height:6px; border-radius:50%; background:var(--phos); box-shadow:0 0 6px var(--phos); }
+.q.bad .dotq{ background:var(--red); box-shadow:0 0 6px var(--red); }
+.node__src{
+  position:absolute; top:.5rem; right:.55rem; font-family:var(--mono);
+  font-size:.5rem; letter-spacing:.5px; text-transform:uppercase;
+  padding:.1rem .3rem; border-radius:3px; border:1px solid var(--line);
+  color:var(--ink-dim);
+}
+.node__src.real{ color:var(--amber); border-color:var(--copper-dim); }
+
+/* ---------- ladder ---------- */
+.ladder-body{ padding:.4rem .2rem .8rem; overflow-x:auto; }
+.ladder-svg{ display:block; width:100%; min-width:640px; height:auto; }
+
+/* legenda do ladder, só rótulos curtos */
+.ladder-legend{
+  display:flex; gap:1.1rem; flex-wrap:wrap; padding:.4rem .9rem .7rem;
+  font-family:var(--mono); font-size:.58rem; color:var(--ink-soft);
+}
+.ladder-legend span{ display:inline-flex; align-items:center; gap:.35rem; }
+.ladder-legend i{ width:18px; height:3px; border-radius:2px; display:inline-block; }
+
+/* ---------- sensores reais ---------- */
+.sensors{ display:grid; grid-template-columns:1fr 1fr; gap:.7rem; padding:.9rem; }
+.sensor{
+  background:var(--bg-2); border:1px solid var(--line); border-radius:9px;
+  padding:.75rem .8rem; position:relative; overflow:hidden;
+}
+.sensor::after{
+  content:""; position:absolute; left:0; right:0; bottom:0; height:2px;
+  background:linear-gradient(90deg,transparent,var(--amber),transparent);
+  opacity:.4;
+}
+.sensor__loc{ font-family:var(--cond); font-size:.92rem; font-weight:600; letter-spacing:.5px; }
+.sensor__coord{ font-family:var(--mono); font-size:.55rem; color:var(--ink-dim); margin-top:1px; }
+.sensor__grid{ display:flex; gap:1.1rem; margin-top:.55rem; }
+.sensor__metric .lbl{ font-family:var(--mono); font-size:.55rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.5px; }
+.sensor__metric .num{ font-family:var(--mono); font-weight:700; font-size:1.35rem; color:var(--amber); }
+.sensor__metric .num small{ font-size:.66rem; color:var(--ink-soft); font-weight:400; }
+.sensor__spark{ margin-top:.5rem; }
+.sensor__status{
+  position:absolute; top:.65rem; right:.7rem; font-family:var(--mono);
+  font-size:.52rem; letter-spacing:.5px; text-transform:uppercase;
+  display:flex; align-items:center; gap:.3rem; color:var(--ink-dim);
+}
+.sensor__status .pip{ width:6px; height:6px; border-radius:50%; background:var(--ink-dim); }
+.sensor__status.live .pip{ background:var(--phos); box-shadow:0 0 6px var(--phos); }
+.sensor__status.err .pip{ background:var(--red); box-shadow:0 0 6px var(--red); }
+
+/* ---------- monitor de assinaturas ---------- */
+.monitor{ margin-top:1rem; }
+.monitor__log{
+  background:#0a1014; border:1px solid var(--line); border-radius:10px;
+  padding:.7rem .9rem; max-height:190px; overflow:auto;
+  font-family:var(--mono); font-size:.68rem; line-height:1.65;
+}
+.logline{ display:flex; gap:.6rem; align-items:baseline; padding:.05rem 0; }
+.logline .t{ color:var(--ink-dim); flex:none; }
+.logline .who{ font-weight:700; flex:none; min-width:74px; }
+.logline .msg{ color:var(--ink-soft); }
+.logline .msg b{ color:var(--ink); font-weight:600; }
+.logline.evt-write .who{ color:var(--copper); }
+.logline.evt-pub .who{ color:var(--ice); }
+.logline.evt-alarm .who{ color:var(--red); }
+.logline.evt-sensor .who{ color:var(--amber); }
+
+/* ---------- controles ---------- */
+.controls{
+  display:flex; gap:.6rem; flex-wrap:wrap; align-items:center;
+  padding:.75rem .9rem; border-top:1px solid var(--line); background:var(--bg-2);
+}
+.ctl{
+  font-family:var(--mono); font-size:.66rem; letter-spacing:.5px;
+  border:1px solid var(--line); background:var(--panel); color:var(--ink);
+  border-radius:6px; padding:.4rem .7rem; cursor:pointer;
+  transition:filter .15s, transform .08s, border-color .15s;
+  display:inline-flex; align-items:center; gap:.4rem;
+}
+.ctl:hover{ border-color:var(--copper); }
+.ctl:active{ transform:translateY(1px); }
+.ctl.run[data-on="true"]{ border-color:var(--phos); color:var(--phos); }
+.ctl.run[data-on="false"]{ border-color:var(--amber); color:var(--amber); }
+.ctl .kbd{ color:var(--ink-dim); font-size:.58rem; }
+.slider-wrap{ display:flex; align-items:center; gap:.5rem; font-family:var(--mono); font-size:.62rem; color:var(--ink-soft); margin-left:auto; }
+input[type=range]{ accent-color:var(--copper); }
+
+.foot{
+  max-width:1280px; margin:1.4rem auto 0; padding:1rem 1.4rem 0;
+  border-top:1px solid var(--line); color:var(--ink-dim);
+  font-size:.7rem; font-family:var(--mono); text-align:center; letter-spacing:.5px;
+}
+.foot b{ color:var(--copper); }
+
+@media (max-width:900px){
+  .layout{ grid-template-columns:1fr; }
+  .sensors{ grid-template-columns:1fr; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="live"></span>
+    <div>
+      <h1>OPC<b>·UA</b> SCADA</h1>
+      <div class="tagline">unified architecture · address space · subscriptions</div>
+    </div>
+  </div>
+  <div class="topbar__right">
+    <div class="stat"><span class="pip on" id="srvPip"></span> servidor <b id="srvState">RUN</b></div>
+    <div class="stat">sessões <b id="sessCount">4</b></div>
+    <div class="stat">nós <b id="nodeCount">7</b></div>
+    <div class="stat"><span class="pip" id="netPip"></span> uplink <b id="netState">—</b></div>
+    <div class="stat">ciclo <b id="scanRate">800</b>ms</div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="layout">
+
+    <!-- ============== CLIENTES OPC ============== -->
+    <aside>
+      <div class="col-head">Clientes OPC <span class="ix">subscribe / read</span></div>
+      <div id="clientList"></div>
+    </aside>
+
+    <!-- ============== PALCO CENTRAL ============== -->
+    <div class="stage">
+
+      <!-- SERVIDOR / ADDRESS SPACE -->
+      <section class="card">
+        <div class="card__head">
+          <h2><span class="glyph">▣</span> Servidor OPC-UA · Address Space</h2>
+          <div class="meta">opc.tcp://localhost:4840 · ns=2</div>
+        </div>
+        <div class="server-body">
+          <div class="ns-bar">
+            <span class="ns-chip">endpoint <b>opc.tcp://…:4840</b></span>
+            <span class="ns-chip">ns=2 <b>Devices</b></span>
+            <span class="ns-chip">SecurityPolicy <b>None</b></span>
+          </div>
+          <div class="nodes" id="nodeGrid"></div>
+        </div>
+      </section>
+
+      <!-- LADDER -->
+      <section class="card">
+        <div class="card__head">
+          <h2><span class="glyph">⊣⊢</span> Lógica de Controle · Ladder (CLP)</h2>
+          <div class="meta" id="plcScan">scan #0</div>
+        </div>
+        <div class="ladder-body">
+          <svg class="ladder-svg" id="ladder" viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+        <div class="ladder-legend">
+          <span><i style="background:var(--copper)"></i>trilho energizado</span>
+          <span><i style="background:var(--ink-dim)"></i>sem energia</span>
+          <span><i style="background:var(--phos)"></i>contato fechado / bobina ON</span>
+        </div>
+      </section>
+
+      <!-- SENSORES REAIS -->
+      <section class="card">
+        <div class="card__head">
+          <h2><span class="glyph">◈</span> Sensores Físicos · Dados Reais</h2>
+          <div class="meta">Open-Meteo · sem chave</div>
+        </div>
+        <div class="sensors" id="sensorGrid"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- MONITOR -->
+  <section class="card monitor">
+    <div class="card__head">
+      <h2><span class="glyph">≡</span> Monitor de Sessões &amp; Publicações</h2>
+      <div class="meta" id="msgRate">0 msg/s</div>
+    </div>
+    <div class="monitor__log" id="log"></div>
+    <div class="controls">
+      <button class="ctl run" id="btnRun" data-on="true">⏸ pausar varredura</button>
+      <button class="ctl" id="btnStep">⏭ passo único</button>
+      <button class="ctl" id="btnRefetch">⟳ buscar sensores agora</button>
+      <button class="ctl" id="btnFault">⚡ injetar falha de qualidade</button>
+      <div class="slider-wrap">
+        velocidade
+        <input type="range" id="speed" min="300" max="2000" step="100" value="800" />
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    Servidor OPC-UA simulado em <b>JavaScript</b> · address space com nós tipados, qualidade e timestamp ·
+    4 clientes com <b>subscriptions</b> · 2 sensores reais via <b>Open-Meteo</b> · lógica <b>Ladder</b> reativa
+  </footer>
+</div>
+
+<script>
+/* =========================================================================
+   NÚCLEO — Servidor OPC-UA simulado
+   Modelo enxuto inspirado no OPC-UA real: address space de nós com
+   NodeId, DataValue { value, statusCode (quality), sourceTimestamp }.
+   Clientes mantêm subscriptions e recebem publicações quando o valor muda.
+   ========================================================================= */
+
+const QUALITY = { GOOD: "Good", BAD: "Bad_NoData", UNCERTAIN: "Uncertain" };
+
+// ---- Address space: cada nó é uma variável OPC ----
+const server = {
+  endpoint: "opc.tcp://localhost:4840",
+  running: true,
+  scan: 0,
+  nodes: {
+    // id        nome              valor  unidade  cor          fonte
+    "ns=2;s=Temp_Forno":   { name:"Temp_Forno",   val:30, unit:"°C", color:"--amber", src:"sensor", q:QUALITY.GOOD, ts:0 },
+    "ns=2;s=Vento_Torre":  { name:"Vento_Torre",  val:12, unit:"km/h",color:"--ice",  src:"sensor", q:QUALITY.GOOD, ts:0 },
+    "ns=2;s=Nivel_Tanque": { name:"Nivel_Tanque", val:42, unit:"%",  color:"--phos", src:"calc",   q:QUALITY.GOOD, ts:0 },
+    "ns=2;s=Pressao":      { name:"Pressao",      val:3.1,unit:"bar", color:"--copper",src:"calc",  q:QUALITY.GOOD, ts:0 },
+    "ns=2;s=Bomba_Cmd":    { name:"Bomba_Cmd",    val:0,  unit:"",   color:"--phos", src:"logic",  q:QUALITY.GOOD, ts:0, bool:true },
+    "ns=2;s=Aquecedor":    { name:"Aquecedor",    val:0,  unit:"",   color:"--copper",src:"logic", q:QUALITY.GOOD, ts:0, bool:true },
+    "ns=2;s=Alarme_Alto":  { name:"Alarme_Alto",  val:0,  unit:"",   color:"--red",  src:"logic",  q:QUALITY.GOOD, ts:0, bool:true },
+  },
+  subs: [], // lista de callbacks de subscription
+};
+
+const NODE_IDS = Object.keys(server.nodes);
+
+// API estilo OPC: escrever um nó dispara notificação às subscriptions
+function writeNode(id, value, quality){
+  const n = server.nodes[id];
+  if(!n) return;
+  const changed = n.val !== value || (quality && n.q !== quality);
+  n.val = value;
+  if(quality) n.q = quality;
+  n.ts = Date.now();
+  if(changed){
+    flashNode(id);
+    server.subs.forEach(cb => cb(id, n));
+  }
+}
+function readNode(id){ return server.nodes[id]; }
+
+/* =========================================================================
+   CLIENTES OPC — cada um assina (subscribe) um subconjunto de nós.
+   Mais de 3 instâncias, com papéis distintos, mostrando integração:
+   todos leem o MESMO servidor, mas reagem de formas diferentes.
+   ========================================================================= */
+const clients = [
+  { id:"HMI-01",   role:"Painel do operador", color:"--ice",    subsTo:["ns=2;s=Temp_Forno","ns=2;s=Nivel_Tanque","ns=2;s=Pressao"], hz:1 },
+  { id:"HIST-02",  role:"Historiador / banco", color:"--phos",  subsTo:["ns=2;s=Temp_Forno","ns=2;s=Vento_Torre","ns=2;s=Nivel_Tanque","ns=2;s=Pressao"], hz:2 },
+  { id:"ALARM-03", role:"Gestor de alarmes",   color:"--violet",subsTo:["ns=2;s=Alarme_Alto","ns=2;s=Pressao","ns=2;s=Temp_Forno"], hz:1 },
+  { id:"MOBILE-04",role:"Supervisório móvel",  color:"--amber", subsTo:["ns=2;s=Bomba_Cmd","ns=2;s=Aquecedor","ns=2;s=Temp_Forno"], hz:3 },
+];
+
+// estado local de cada cliente (cache da última leitura)
+clients.forEach(c => { c.cache = {}; c.el = null; });
+
+/* =========================================================================
+   RENDER — coluna de clientes
+   ========================================================================= */
+const clientList = document.getElementById("clientList");
+function buildClients(){
+  clients.forEach(c => {
+    const card = document.createElement("div");
+    card.className = "client";
+    card.style.setProperty("--cl", `var(${c.color})`);
+    card.innerHTML = `
+      <div class="client__top">
+        <div>
+          <div class="client__name">${c.id}</div>
+          <div class="client__role">${c.role}</div>
+        </div>
+        <span class="client__led"></span>
+      </div>
+      <div class="client__sub">
+        ${c.subsTo.map(id => `
+          <div class="sub-row" data-node="${id}">
+            <span class="tag">${server.nodes[id].name}</span>
+            <span class="v">—</span>
+          </div>`).join("")}
+      </div>
+      <div class="client__hz">${c.subsTo.length} monitored items</div>`;
+    clientList.appendChild(card);
+    c.el = card;
+  });
+}
+
+function clientReceive(client, nodeId, node){
+  if(!client.subsTo.includes(nodeId)) return;
+  client.cache[nodeId] = node.val;
+  // pisca a linha correspondente
+  const row = client.el.querySelector(`.sub-row[data-node="${nodeId}"]`);
+  if(row){
+    const v = row.querySelector(".v");
+    v.textContent = fmt(node);
+    row.classList.remove("changed"); void row.offsetWidth; row.classList.add("changed");
+  }
+  // pisca o cartão do cliente
+  client.el.classList.add("reading");
+  clearTimeout(client._t);
+  client._t = setTimeout(()=> client.el.classList.remove("reading"), 260);
+}
+
+function fmt(node){
+  if(node.bool) return node.val ? "ON" : "OFF";
+  const v = typeof node.val === "number" ? (Math.abs(node.val)>=100? node.val.toFixed(0): node.val.toFixed(1)) : node.val;
+  return `${v}${node.unit?(" "+node.unit):""}`;
+}
+
+/* =========================================================================
+   RENDER — nós do servidor (address space)
+   ========================================================================= */
+const nodeGrid = document.getElementById("nodeGrid");
+function buildNodes(){
+  nodeGrid.innerHTML = "";
+  NODE_IDS.forEach(id => {
+    const n = server.nodes[id];
+    const d = document.createElement("div");
+    d.className = "node";
+    d.dataset.id = id;
+    d.style.setProperty("--nc", `var(${n.color})`);
+    d.innerHTML = `
+      <div class="node__src ${n.src==='sensor'?'real':''}">${n.src}</div>
+      <div class="node__id">${id}</div>
+      <div class="node__name">${n.name}</div>
+      <div class="node__val">${valText(n)}</div>
+      <div class="node__foot">
+        <span class="q"><span class="dotq"></span><span class="qt">${n.q}</span></span>
+        <span class="ts">--:--:--</span>
+      </div>`;
+    nodeGrid.appendChild(d);
+  });
+}
+function valText(n){
+  if(n.bool) return n.val ? "ON" : "OFF";
+  const num = typeof n.val==="number" ? (Math.abs(n.val)>=100? n.val.toFixed(0): n.val.toFixed(1)) : n.val;
+  return `${num}<span class="node__unit">${n.unit}</span>`;
+}
+function flashNode(id){
+  const d = nodeGrid.querySelector(`.node[data-id="${id}"]`);
+  if(!d) return;
+  const n = server.nodes[id];
+  d.querySelector(".node__val").innerHTML = valText(n);
+  d.querySelector(".qt").textContent = n.q;
+  const qEl = d.querySelector(".q");
+  qEl.classList.toggle("bad", n.q!==QUALITY.GOOD);
+  d.querySelector(".ts").textContent = new Date(n.ts).toLocaleTimeString("pt-BR");
+  d.classList.remove("write"); void d.offsetWidth; d.classList.add("write");
+}
+
+/* =========================================================================
+   LADDER — desenho SVG dinâmico.
+   3 degraus (rungs). Os contatos lêem nós do servidor; as bobinas
+   ESCREVEM nós do servidor. Assim o OPC "age" no sistema visualmente:
+   sensor real -> nó OPC -> contato -> bobina -> nó OPC -> clientes.
+   ========================================================================= */
+const SVGNS = "http://www.w3.org/2000/svg";
+const ladder = document.getElementById("ladder");
+
+// definição lógica dos degraus
+const rungs = [
+  {
+    y: 60, coil:"ns=2;s=Aquecedor", coilLabel:"Aquecedor",
+    contacts:[
+      { node:"ns=2;s=Temp_Forno", type:"LT", thr:30, label:"Temp < 30" },   // normalmente: liga aquecedor se frio
+      { node:"ns=2;s=Alarme_Alto", type:"NC", label:"NÃO Alarme" },
+    ]
+  },
+  {
+    y: 150, coil:"ns=2;s=Bomba_Cmd", coilLabel:"Bomba",
+    contacts:[
+      { node:"ns=2;s=Nivel_Tanque", type:"HYST", on:40, off:60, label:"Nível baixo" }, // liga<40, desliga>60
+      { node:"ns=2;s=Pressao", type:"LT", thr:5, label:"Pressão < 5" },
+    ]
+  },
+  {
+    y: 240, coil:"ns=2;s=Alarme_Alto", coilLabel:"Alarme",
+    contacts:[
+      { node:"ns=2;s=Temp_Forno", type:"HYST", on:36, off:33, invert:true, label:"Temp alta" }, // alarme >36, limpa <33
+    ]
+  },
+];
+
+const RAIL_L = 40, RAIL_R = 680;
+
+function evalContact(c){
+  const n = server.nodes[c.node];
+  let v = n.val;
+  if(c.type==="NC") return !(v); // contato normalmente fechado: conduz se nó = 0/false
+  if(c.type==="NO") return !!v;
+  if(c.type==="GT") return v > c.thr;
+  if(c.type==="LT") return v < c.thr;
+  if(c.type==="HYST"){
+    if(c.invert){
+      // histerese de alta: liga quando sobe acima de 'on', desliga ao cair abaixo de 'off'
+      if(c._state === undefined) c._state = v > c.on;
+      if(c._state){ if(v < c.off) c._state = false; }
+      else        { if(v > c.on)  c._state = true;  }
+      return c._state;
+    }
+    // histerese de baixa: liga quando cai abaixo de 'on', desliga ao subir acima de 'off'
+    if(c._state === undefined) c._state = v < c.on;
+    if(c._state){ if(v > c.off) c._state = false; }
+    else        { if(v < c.on)  c._state = true;  }
+    return c._state;
+  }
+  return false;
+}
+
+function buildLadder(){
+  ladder.innerHTML = "";
+  // trilhos verticais
+  mkLine(RAIL_L, 30, RAIL_L, 270, "rail-l");
+  mkLine(RAIL_R, 30, RAIL_R, 270, "rail-r");
+
+  rungs.forEach((r, ri) => {
+    const n = r.contacts.length;
+    // posições dos contatos ao longo da linha
+    const usable = (RAIL_R - 90) - (RAIL_L + 20);
+    const seg = usable / (n + 1);
+    r._contactX = [];
+    // segmento inicial do trilho esquerdo ao 1º contato
+    let prevX = RAIL_L;
+    r.contacts.forEach((c, ci) => {
+      const cx = RAIL_L + 20 + seg*(ci+1);
+      r._contactX.push(cx);
+      // fio antes do contato
+      mkWire(prevX, r.y, cx-22, r.y, `w-${ri}-${ci}-pre`);
+      // símbolo do contato
+      mkContact(cx, r.y, c, ri, ci);
+      prevX = cx+22;
+    });
+    // fio do último contato até a bobina
+    const coilX = RAIL_R - 60;
+    mkWire(prevX, r.y, coilX-26, r.y, `w-${ri}-coil`);
+    // bobina
+    mkCoil(coilX, r.y, r, ri);
+    // rótulo do degrau (cabeçalho curto permitido)
+    mkText(RAIL_L-4, r.y-30, `${String(ri).padStart(2,"0")}`, "rung-ix", "end");
+  });
+}
+
+function mkLine(x1,y1,x2,y2,id){
+  const l = document.createElementNS(SVGNS,"line");
+  l.setAttribute("x1",x1);l.setAttribute("y1",y1);l.setAttribute("x2",x2);l.setAttribute("y2",y2);
+  l.setAttribute("id",id); l.setAttribute("stroke","var(--copper)");
+  l.setAttribute("stroke-width","3"); l.setAttribute("stroke-linecap","round");
+  ladder.appendChild(l); return l;
+}
+function mkWire(x1,y1,x2,y2,id){
+  const l = document.createElementNS(SVGNS,"line");
+  l.setAttribute("x1",x1);l.setAttribute("y1",y1);l.setAttribute("x2",x2);l.setAttribute("y2",y2);
+  l.setAttribute("id",id); l.setAttribute("class","wire");
+  l.setAttribute("stroke","var(--ink-dim)"); l.setAttribute("stroke-width","2.5");
+  l.setAttribute("stroke-linecap","round");
+  ladder.appendChild(l); return l;
+}
+function mkText(x,y,txt,cls,anchor){
+  const t = document.createElementNS(SVGNS,"text");
+  t.setAttribute("x",x);t.setAttribute("y",y);
+  t.setAttribute("fill","var(--ink-soft)");
+  t.setAttribute("font-family","var(--mono)");
+  t.setAttribute("font-size","10");
+  t.setAttribute("text-anchor",anchor||"middle");
+  if(cls==="rung-ix"){ t.setAttribute("fill","var(--ink-dim)"); t.setAttribute("font-size","11"); }
+  t.textContent = txt; t.setAttribute("class",cls||"");
+  ladder.appendChild(t); return t;
+}
+function mkContact(cx,cy,c,ri,ci){
+  const g = document.createElementNS(SVGNS,"g");
+  g.setAttribute("id",`contact-${ri}-${ci}`);
+  // dois colchetes [ ]  (ou [/] para NC)
+  const left = document.createElementNS(SVGNS,"path");
+  left.setAttribute("d",`M ${cx-22} ${cy-13} L ${cx-13} ${cy-13} L ${cx-13} ${cy+13} L ${cx-22} ${cy+13}`);
+  const right = document.createElementNS(SVGNS,"path");
+  right.setAttribute("d",`M ${cx+22} ${cy-13} L ${cx+13} ${cy-13} L ${cx+13} ${cy+13} L ${cx+22} ${cy+13}`);
+  [left,right].forEach(p=>{ p.setAttribute("fill","none"); p.setAttribute("stroke","var(--ink-soft)"); p.setAttribute("stroke-width","2.5"); g.appendChild(p); });
+  // barra diagonal para NC
+  if(c.type==="NC"){
+    const slash = document.createElementNS(SVGNS,"line");
+    slash.setAttribute("x1",cx-11);slash.setAttribute("y1",cy+12);
+    slash.setAttribute("x2",cx+11);slash.setAttribute("y2",cy-12);
+    slash.setAttribute("stroke","var(--ink-soft)");slash.setAttribute("stroke-width","2");
+    slash.setAttribute("class","nc-slash");
+    g.appendChild(slash);
+  }
+  ladder.appendChild(g);
+  // rótulo (nome curto) + nodeId
+  mkText(cx, cy-20, c.label, "c-label");
+  mkText(cx, cy+30, c.node.split("=").pop(), "c-node");
+  const nodeTxt = ladder.lastChild;
+  nodeTxt.setAttribute("fill","var(--ink-dim)");
+  nodeTxt.setAttribute("font-size","8");
+}
+function mkCoil(cx,cy,r,ri){
+  const g = document.createElementNS(SVGNS,"g");
+  g.setAttribute("id",`coil-${ri}`);
+  const lp = document.createElementNS(SVGNS,"path");
+  lp.setAttribute("d",`M ${cx-26} ${cy-15} A 18 18 0 0 0 ${cx-26} ${cy+15}`);
+  const rp = document.createElementNS(SVGNS,"path");
+  rp.setAttribute("d",`M ${cx+26} ${cy-15} A 18 18 0 0 1 ${cx+26} ${cy+15}`);
+  [lp,rp].forEach(p=>{ p.setAttribute("fill","none"); p.setAttribute("stroke","var(--ink-soft)"); p.setAttribute("stroke-width","2.5"); g.appendChild(p); });
+  ladder.appendChild(g);
+  // fio da bobina ao trilho direito
+  mkWire(cx+26, cy, RAIL_R, cy, `w-${ri}-post`);
+  mkText(cx, cy-22, r.coilLabel, "coil-label");
+  const t = ladder.lastChild; t.setAttribute("fill","var(--ink-soft)");
+}
+
+/* ---- avalia o ladder e atualiza energização + escreve bobinas ---- */
+function solveLadder(){
+  rungs.forEach((r, ri) => {
+    let powered = true;
+    r.contacts.forEach((c, ci) => {
+      const cond = evalContact(c);
+      powered = powered && cond;
+      paintContact(ri, ci, cond);
+    });
+    // pinta fios do degrau conforme energia acumulada
+    paintRung(ri, r, powered);
+    // a bobina ESCREVE no servidor OPC (lógica age no address space)
+    const coilNode = server.nodes[r.coil];
+    const newVal = powered ? 1 : 0;
+    if(coilNode.val !== newVal){
+      writeNode(r.coil, newVal);
+      logEvent("pub", r.coilLabel.toUpperCase(), `bobina → <b>${newVal?"ON":"OFF"}</b> (escreve ${r.coil})`, "evt-write");
+    }
+    paintCoil(ri, powered);
+  });
+  document.getElementById("plcScan").textContent = `scan #${server.scan}`;
+}
+
+function paintContact(ri,ci,cond){
+  const g = document.getElementById(`contact-${ri}-${ci}`);
+  if(!g) return;
+  const col = cond ? "var(--phos)" : "var(--ink-soft)";
+  g.querySelectorAll("path,line").forEach(p=>p.setAttribute("stroke",col));
+}
+function paintRung(ri,r,powered){
+  // pré-fios: energiza progressivamente conforme contatos conduzem
+  let acc = true;
+  r.contacts.forEach((c,ci)=>{
+    const pre = document.getElementById(`w-${ri}-${ci}-pre`);
+    if(pre) pre.setAttribute("stroke", acc ? "var(--copper)" : "var(--ink-dim)");
+    acc = acc && evalContact(c);
+  });
+  const coilWire = document.getElementById(`w-${ri}-coil`);
+  if(coilWire) coilWire.setAttribute("stroke", acc ? "var(--copper)" : "var(--ink-dim)");
+  const post = document.getElementById(`w-${ri}-post`);
+  if(post) post.setAttribute("stroke", powered ? "var(--copper)" : "var(--ink-dim)");
+}
+function paintCoil(ri,powered){
+  const g = document.getElementById(`coil-${ri}`);
+  if(!g) return;
+  const col = powered ? "var(--phos)" : "var(--ink-soft)";
+  g.querySelectorAll("path").forEach(p=>{
+    p.setAttribute("stroke",col);
+    p.setAttribute("stroke-width", powered? "3.2":"2.5");
+  });
+}
+
+/* =========================================================================
+   SENSORES REAIS — Open-Meteo (sem chave).
+   2 estações: alimentam Temp_Forno e Vento_Torre no address space.
+   ========================================================================= */
+const sensors = [
+  { loc:"Estação A — Fortaleza", lat:-3.73, lon:-38.52, node:"ns=2;s=Temp_Forno", field:"temperature_2m", unit:"°C", label:"Temperatura", color:"--amber", hist:[] },
+  { loc:"Estação B — São Paulo", lat:-23.55, lon:-46.63, node:"ns=2;s=Vento_Torre", field:"wind_speed_10m", unit:"km/h", label:"Vento", color:"--ice", hist:[] },
+];
+const sensorGrid = document.getElementById("sensorGrid");
+function buildSensors(){
+  sensorGrid.innerHTML = "";
+  sensors.forEach((s,i)=>{
+    const d = document.createElement("div");
+    d.className="sensor"; d.dataset.i=i;
+    d.innerHTML = `
+      <div class="sensor__status" data-i="${i}"><span class="pip"></span><span class="txt">conectando…</span></div>
+      <div class="sensor__loc">${s.loc}</div>
+      <div class="sensor__coord">lat ${s.lat} · lon ${s.lon} · /v1/forecast</div>
+      <div class="sensor__grid">
+        <div class="sensor__metric">
+          <div class="lbl">${s.label}</div>
+          <div class="num" data-v="${i}">--<small> ${s.unit}</small></div>
+        </div>
+        <div class="sensor__metric">
+          <div class="lbl">amostras</div>
+          <div class="num" data-n="${i}" style="color:var(--ink-soft)">0</div>
+        </div>
+      </div>
+      <svg class="sensor__spark" data-spark="${i}" viewBox="0 0 240 40" width="100%" height="40" preserveAspectRatio="none"></svg>`;
+    sensorGrid.appendChild(d);
+  });
+}
+
+async function fetchSensors(){
+  setNet("sync", "fetch…");
+  let ok = 0;
+  await Promise.all(sensors.map(async (s,i)=>{
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${s.lat}&longitude=${s.lon}&current=${s.field}`;
+    const stEl = sensorGrid.querySelector(`.sensor__status[data-i="${i}"]`);
+    try{
+      const r = await fetch(url);
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      const j = await r.json();
+      const val = j.current[s.field];
+      // grava no nó OPC -> dispara subscriptions + ladder no próximo scan
+      writeNode(s.node, Math.round(val*10)/10, QUALITY.GOOD);
+      s.hist.push(val); if(s.hist.length>40) s.hist.shift();
+      // UI do sensor
+      sensorGrid.querySelector(`.num[data-v="${i}"]`).innerHTML = `${val.toFixed(1)}<small> ${s.unit}</small>`;
+      sensorGrid.querySelector(`.num[data-n="${i}"]`).textContent = s.hist.length;
+      drawSpark(i, s);
+      stEl.className = "sensor__status live"; stEl.querySelector(".txt").textContent = "Good · "+new Date().toLocaleTimeString("pt-BR");
+      logEvent("sensor", s.node.split("=").pop(), `leitura real <b>${val.toFixed(1)} ${s.unit}</b> de ${s.loc.split("—")[1].trim()}`, "evt-sensor");
+      ok++;
+    }catch(e){
+      stEl.className="sensor__status err";
+      const isFile = location.protocol === "file:";
+      stEl.querySelector(".txt").textContent = isFile ? "simulado (abra via http)" : "simulado · sem rede";
+      // FALLBACK: gera valor plausível localmente para a demo continuar viva.
+      // Qualidade Uncertain deixa explícito que NÃO é dado real.
+      const base = s.field === "temperature_2m" ? 30 : 12;
+      const prev = (s.hist.length ? s.hist[s.hist.length-1] : base);
+      let val = prev + (Math.random()*2 - 1);              // passeio aleatório suave
+      val = Math.max(base-6, Math.min(base+8, val));
+      val = Math.round(val*10)/10;
+      writeNode(s.node, val, QUALITY.UNCERTAIN);
+      s.hist.push(val); if(s.hist.length>40) s.hist.shift();
+      sensorGrid.querySelector(`.num[data-v="${i}"]`).innerHTML = `${val.toFixed(1)}<small> ${s.unit}</small>`;
+      sensorGrid.querySelector(`.num[data-n="${i}"]`).textContent = s.hist.length;
+      drawSpark(i, s);
+      const why = isFile ? `file:// bloqueia fetch — valor simulado` : `sem rede (${e.message}) — valor simulado`;
+      logEvent("sensor", s.node.split("=").pop(), `${why}, qualidade <b>Uncertain</b>`, "evt-alarm");
+    }
+  }));
+  setNet(ok===sensors.length?"ok":(ok>0?"part":"err"), ok? "Open-Meteo":"offline");
+}
+
+function drawSpark(i, s){
+  const svg = sensorGrid.querySelector(`svg[data-spark="${i}"]`);
+  if(!svg) return;
+  const d = s.hist; if(d.length<2){ svg.innerHTML=""; return; }
+  const min = Math.min(...d), max = Math.max(...d), rng = (max-min)||1;
+  const pts = d.map((v,ix)=>{
+    const x = (ix/(d.length-1))*240;
+    const y = 38 - ((v-min)/rng)*34;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  svg.innerHTML =
+    `<polyline points="${pts}" fill="none" stroke="var(${s.color})" stroke-width="1.5" stroke-linejoin="round"/>`+
+    `<circle cx="240" cy="${(38-((d[d.length-1]-min)/rng)*34).toFixed(1)}" r="2.4" fill="var(${s.color})"/>`;
+}
+
+/* =========================================================================
+   PROCESSO SIMULADO — nós "calc" derivam fisicamente (nível, pressão)
+   para o ladder ter dinâmica mesmo entre fetches reais.
+   ========================================================================= */
+function stepProcess(){
+  const nivel = server.nodes["ns=2;s=Nivel_Tanque"];
+  const bomba = server.nodes["ns=2;s=Bomba_Cmd"].val;
+  const aquece = server.nodes["ns=2;s=Aquecedor"].val;
+  // bomba enche o tanque, consumo o esvazia
+  let nv = nivel.val + (bomba? 2.4 : -1.3) + (Math.random()*0.6-0.3);
+  nv = Math.max(0, Math.min(100, nv));
+  writeNode("ns=2;s=Nivel_Tanque", Math.round(nv*10)/10);
+  // pressão acompanha nível + ruído
+  const p = 1 + (nv/100)*4 + (Math.random()*0.3-0.15);
+  writeNode("ns=2;s=Pressao", Math.round(p*100)/100);
+  // aquecedor empurra a temperatura (sobre o valor do sensor real)
+  const t = server.nodes["ns=2;s=Temp_Forno"];
+  if(aquece){ writeNode("ns=2;s=Temp_Forno", Math.round((t.val+0.4)*10)/10); }
+}
+
+/* =========================================================================
+   SUBSCRIPTIONS — registra cada cliente como assinante do servidor
+   ========================================================================= */
+function wireSubscriptions(){
+  server.subs = [];
+  clients.forEach(c=>{
+    const cb = (nodeId, node)=>{
+      if(c.subsTo.includes(nodeId)){
+        clientReceive(c, nodeId, node);
+        // alarme dispara log especial
+        if(nodeId==="ns=2;s=Alarme_Alto" && node.val && c.id==="ALARM-03"){
+          logEvent("alarm", c.id, `ALARME recebido via subscription — <b>HH Temp</b>`, "evt-alarm");
+        }
+      }
+    };
+    server.subs.push(cb);
+  });
+}
+
+/* =========================================================================
+   MONITOR / LOG
+   ========================================================================= */
+const logBox = document.getElementById("log");
+let msgCount = 0, msgWindow = 0;
+function logEvent(kind, who, msg, cls){
+  msgCount++; msgWindow++;
+  const line = document.createElement("div");
+  line.className = "logline "+(cls||"");
+  line.innerHTML = `<span class="t">${new Date().toLocaleTimeString("pt-BR")}</span>`+
+                   `<span class="who">${who}</span>`+
+                   `<span class="msg">${msg}</span>`;
+  logBox.prepend(line);
+  while(logBox.children.length>60) logBox.removeChild(logBox.lastChild);
+}
+setInterval(()=>{ document.getElementById("msgRate").textContent = msgWindow+" msg/s"; msgWindow=0; }, 1000);
+
+/* =========================================================================
+   STATUS DE REDE
+   ========================================================================= */
+function setNet(state, label){
+  const pip = document.getElementById("netPip");
+  const txt = document.getElementById("netState");
+  pip.className = "pip" + (state==="ok"?" on":(state==="err"?"":" warn"));
+  if(state==="ok") pip.classList.add("on");
+  if(state==="sync"||state==="part") pip.classList.add("warn");
+  txt.textContent = label;
+}
+
+/* =========================================================================
+   LOOP PRINCIPAL — o "scan cycle" do CLP/servidor
+   ========================================================================= */
+let scanRate = 800;
+let loopTimer = null;
+function scanCycle(){
+  if(!server.running) return;
+  server.scan++;
+  stepProcess();   // física do processo
+  solveLadder();   // lógica ladder lê nós e escreve bobinas
+  // HMI/Historiador também fazem "read" periódico explícito (pull), além do subscribe (push)
+  clients.forEach(c=>{
+    if(server.scan % c.hz === 0){
+      c.subsTo.forEach(id=> clientReceive(c, id, server.nodes[id]));
+    }
+  });
+}
+function startLoop(){
+  clearInterval(loopTimer);
+  loopTimer = setInterval(scanCycle, scanRate);
+}
+
+/* =========================================================================
+   CONTROLES
+   ========================================================================= */
+function bindControls(){
+  const btnRun = document.getElementById("btnRun");
+  btnRun.addEventListener("click", ()=>{
+    server.running = !server.running;
+    btnRun.dataset.on = server.running;
+    btnRun.textContent = server.running ? "⏸ pausar varredura" : "▶ retomar varredura";
+    document.getElementById("srvState").textContent = server.running? "RUN":"HOLD";
+    document.getElementById("srvPip").classList.toggle("on", server.running);
+  });
+  document.getElementById("btnStep").addEventListener("click", ()=>{
+    const was = server.running; server.running=true; scanCycle(); server.running=was;
+  });
+  document.getElementById("btnRefetch").addEventListener("click", fetchSensors);
+  document.getElementById("btnFault").addEventListener("click", ()=>{
+    // injeta qualidade ruim num nó aleatório de sensor
+    const s = sensors[Math.floor(Math.random()*sensors.length)];
+    writeNode(s.node, server.nodes[s.node].val, QUALITY.BAD);
+    logEvent("alarm", s.node.split("=").pop(), `qualidade forçada → <b>Bad_NoData</b>`, "evt-alarm");
+  });
+  const speed = document.getElementById("speed");
+  speed.addEventListener("input", ()=>{
+    scanRate = +speed.value;
+    document.getElementById("scanRate").textContent = scanRate;
+    startLoop();
+  });
+}
+
+/* =========================================================================
+   BOOT
+   ========================================================================= */
+function boot(){
+  document.getElementById("sessCount").textContent = clients.length;
+  document.getElementById("nodeCount").textContent = NODE_IDS.length;
+  document.getElementById("srvPip").classList.add("on");
+  buildClients();
+  buildNodes();
+  buildLadder();
+  buildSensors();
+  wireSubscriptions();
+  // valores iniciais nos nós
+  NODE_IDS.forEach(id=> flashNode(id));
+  logEvent("pub","SERVER",`address space pronto — <b>${NODE_IDS.length} nós</b> em ns=2`,"evt-pub");
+  fetchSensors();
+  setInterval(fetchSensors, 30000); // dados reais a cada 30s
+  startLoop();
+  bindControls();
+}
+boot();
+</script>
+</body>
+</html>
