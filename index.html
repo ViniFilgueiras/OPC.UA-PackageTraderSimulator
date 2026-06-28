@@ -236,6 +236,31 @@ body{
 .ladder-legend span{ display:inline-flex; align-items:center; gap:.35rem; }
 .ladder-legend i{ width:18px; height:3px; border-radius:2px; display:inline-block; }
 
+/* mini-manual de limiares */
+.manual-guide{ border-top:1px solid var(--line); padding:.75rem .9rem .9rem; background:var(--bg-2); }
+.mg-head h3{
+  font-family:var(--cond); text-transform:uppercase; letter-spacing:1.5px;
+  font-size:.74rem; font-weight:600; color:var(--ink-soft); margin:0 0 .65rem;
+}
+.mg-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.6rem; }
+.mg-card{
+  border:1px solid var(--line); border-left:3px solid var(--mgc,var(--phos));
+  border-radius:7px; padding:.6rem .7rem; background:var(--panel);
+}
+.mg-card h4{
+  font-family:var(--cond); font-size:.86rem; font-weight:600; letter-spacing:.4px;
+  margin:0 0 .35rem; color:var(--ink); display:flex; align-items:center; gap:.4rem;
+}
+.mg-card h4 .coil-dot{ width:8px; height:8px; border-radius:50%; background:var(--mgc); box-shadow:0 0 6px var(--mgc); }
+.mg-rule{ font-family:var(--mono); font-size:.64rem; line-height:1.7; color:var(--ink-soft); }
+.mg-rule b{ color:var(--ink); font-weight:600; }
+.mg-rule .num{ color:var(--mgc); font-weight:700; }
+.mg-try{
+  margin-top:.45rem; font-family:var(--mono); font-size:.58rem; color:var(--ink-dim);
+  border-top:1px dashed var(--line); padding-top:.4rem;
+}
+.mg-try b{ color:var(--amber); font-weight:600; }
+
 /* ---------- sensores reais ---------- */
 .sensors{ display:grid; grid-template-columns:1fr 1fr; gap:.7rem; padding:.9rem; }
 .sensor{
@@ -262,6 +287,22 @@ body{
 .sensor__status .pip{ width:6px; height:6px; border-radius:50%; background:var(--ink-dim); }
 .sensor__status.live .pip{ background:var(--phos); box-shadow:0 0 6px var(--phos); }
 .sensor__status.err .pip{ background:var(--red); box-shadow:0 0 6px var(--red); }
+.sensor__status.man .pip{ background:var(--violet); box-shadow:0 0 6px var(--violet); }
+.sensor__status.man{ color:var(--violet); }
+
+/* controles manuais do sensor */
+.sensor__manual{ margin-top:.6rem; border-top:1px dashed var(--line); padding-top:.55rem; }
+.man-toggle{
+  font-family:var(--mono); font-size:.6rem; letter-spacing:.4px;
+  border:1px solid var(--line); background:var(--panel); color:var(--ink-soft);
+  border-radius:5px; padding:.32rem .55rem; cursor:pointer; width:100%;
+  transition:border-color .15s, color .15s;
+}
+.man-toggle:hover{ border-color:var(--violet); color:var(--ink); }
+.man-toggle.on{ border-color:var(--violet); color:var(--violet); }
+.man-slider{ display:flex; align-items:center; gap:.55rem; margin-top:.5rem; }
+.man-slider input[type=range]{ flex:1; accent-color:var(--violet); }
+.man-val{ font-family:var(--mono); font-size:.7rem; font-weight:700; color:var(--violet); min-width:54px; text-align:right; }
 
 /* ---------- monitor de assinaturas ---------- */
 .monitor{ margin-top:1rem; }
@@ -373,6 +414,12 @@ input[type=range]{ accent-color:var(--copper); }
           <span><i style="background:var(--copper)"></i>trilho energizado</span>
           <span><i style="background:var(--ink-dim)"></i>sem energia</span>
           <span><i style="background:var(--phos)"></i>contato fechado / bobina ON</span>
+        </div>
+        <div class="manual-guide">
+          <div class="mg-head">
+            <h3>Manual de limiares — o que mexer para ver acontecer</h3>
+          </div>
+          <div class="mg-grid" id="mgGrid"></div>
         </div>
       </section>
 
@@ -600,6 +647,46 @@ const rungs = [
 
 const RAIL_L = 40, RAIL_R = 680;
 
+// monta o mini-manual de limiares a partir das definições reais dos rungs
+function buildManualGuide(){
+  const mg = document.getElementById("mgGrid");
+  if(!mg) return;
+  const cards = [
+    {
+      coil:"Aquecedor", color:"--copper",
+      rules:[
+        `Liga o aquecedor quando <b>Temp_Forno</b> &lt; <span class="num">30°C</span>`,
+        `<b>E</b> não houver alarme ativo (intertravamento de segurança)`,
+      ],
+      try:`Baixe a temperatura no controle manual até <b>abaixo de 30°</b> e veja o trilho 00 energizar.`
+    },
+    {
+      coil:"Bomba", color:"--phos",
+      rules:[
+        `Liga com <b>histerese</b>: aciona quando <b>Nível</b> &lt; <span class="num">40%</span>`,
+        `Só desliga quando <b>Nível</b> &gt; <span class="num">60%</span> (evita chattering)`,
+        `Exige também <b>Pressão</b> &lt; <span class="num">5 bar</span>`,
+      ],
+      try:`Deixe rodando e observe a bomba ligar/desligar em ciclos largos, não a cada scan.`
+    },
+    {
+      coil:"Alarme", color:"--red",
+      rules:[
+        `Dispara quando <b>Temp_Forno</b> &gt; <span class="num">36°C</span>`,
+        `Só limpa quando cai abaixo de <span class="num">33°C</span> (histerese)`,
+        `Ao disparar, abre o intertravamento e <b>corta o aquecedor</b>`,
+      ],
+      try:`Suba a temperatura manual <b>acima de 36°</b>: alarme acende e o ALARM-03 registra no monitor.`
+    },
+  ];
+  mg.innerHTML = cards.map(c=>`
+    <div class="mg-card" style="--mgc:var(${c.color})">
+      <h4><span class="coil-dot"></span>${c.coil}</h4>
+      <div class="mg-rule">${c.rules.map(r=>`• ${r}`).join("<br>")}</div>
+      <div class="mg-try">▸ ${c.try}</div>
+    </div>`).join("");
+}
+
 function evalContact(c){
   const n = server.nodes[c.node];
   let v = n.val;
@@ -781,8 +868,8 @@ function paintCoil(ri,powered){
    2 estações: alimentam Temp_Forno e Vento_Torre no address space.
    ========================================================================= */
 const sensors = [
-  { loc:"Estação A — Fortaleza", lat:-3.73, lon:-38.52, node:"ns=2;s=Temp_Forno", field:"temperature_2m", unit:"°C", label:"Temperatura", color:"--amber", hist:[] },
-  { loc:"Estação B — São Paulo", lat:-23.55, lon:-46.63, node:"ns=2;s=Vento_Torre", field:"wind_speed_10m", unit:"km/h", label:"Vento", color:"--ice", hist:[] },
+  { loc:"Estação A — Fortaleza", lat:-3.73, lon:-38.52, node:"ns=2;s=Temp_Forno", field:"temperature_2m", unit:"°C", label:"Temperatura", color:"--amber", hist:[], manual:false, min:15, max:50, step:0.5 },
+  { loc:"Estação B — São Paulo", lat:-23.55, lon:-46.63, node:"ns=2;s=Vento_Torre", field:"wind_speed_10m", unit:"km/h", label:"Vento", color:"--ice", hist:[], manual:false, min:0, max:60, step:1 },
 ];
 const sensorGrid = document.getElementById("sensorGrid");
 function buildSensors(){
@@ -790,6 +877,7 @@ function buildSensors(){
   sensors.forEach((s,i)=>{
     const d = document.createElement("div");
     d.className="sensor"; d.dataset.i=i;
+    const cur = server.nodes[s.node].val;
     d.innerHTML = `
       <div class="sensor__status" data-i="${i}"><span class="pip"></span><span class="txt">conectando…</span></div>
       <div class="sensor__loc">${s.loc}</div>
@@ -804,7 +892,14 @@ function buildSensors(){
           <div class="num" data-n="${i}" style="color:var(--ink-soft)">0</div>
         </div>
       </div>
-      <svg class="sensor__spark" data-spark="${i}" viewBox="0 0 240 40" width="100%" height="40" preserveAspectRatio="none"></svg>`;
+      <svg class="sensor__spark" data-spark="${i}" viewBox="0 0 240 40" width="100%" height="40" preserveAspectRatio="none"></svg>
+      <div class="sensor__manual">
+        <button class="man-toggle" data-man="${i}" aria-pressed="false">✋ controle manual</button>
+        <div class="man-slider" data-slider="${i}" hidden>
+          <input type="range" min="${s.min}" max="${s.max}" step="${s.step}" value="${cur}" data-range="${i}" />
+          <span class="man-val" data-manval="${i}">${cur}${s.unit}</span>
+        </div>
+      </div>`;
     sensorGrid.appendChild(d);
   });
 }
@@ -813,6 +908,14 @@ async function fetchSensors(){
   setNet("sync", "fetch…");
   let ok = 0;
   await Promise.all(sensors.map(async (s,i)=>{
+    // em modo manual, o operador controla o valor — não sobrescreve com a API
+    if(s.manual){
+      const stEl = sensorGrid.querySelector(`.sensor__status[data-i="${i}"]`);
+      stEl.className = "sensor__status man";
+      stEl.querySelector(".txt").textContent = "manual";
+      ok++; // conta como "atendido" para o status de rede não acusar falha
+      return;
+    }
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${s.lat}&longitude=${s.lon}&current=${s.field}`;
     const stEl = sensorGrid.querySelector(`.sensor__status[data-i="${i}"]`);
     try{
@@ -853,6 +956,18 @@ async function fetchSensors(){
   setNet(ok===sensors.length?"ok":(ok>0?"part":"err"), ok? "Open-Meteo":"offline");
 }
 
+function applyManualSensor(i, val){
+  const s = sensors[i];
+  val = Math.round(val*10)/10;
+  writeNode(s.node, val, QUALITY.GOOD); // manual conta como leitura válida (Good)
+  s.hist.push(val); if(s.hist.length>40) s.hist.shift();
+  sensorGrid.querySelector(`.num[data-v="${i}"]`).innerHTML = `${val.toFixed(1)}<small> ${s.unit}</small>`;
+  sensorGrid.querySelector(`.num[data-n="${i}"]`).textContent = s.hist.length;
+  const mv = sensorGrid.querySelector(`.man-val[data-manval="${i}"]`);
+  if(mv) mv.textContent = `${val}${s.unit}`;
+  drawSpark(i, s);
+}
+
 function drawSpark(i, s){
   const svg = sensorGrid.querySelector(`svg[data-spark="${i}"]`);
   if(!svg) return;
@@ -883,9 +998,11 @@ function stepProcess(){
   // pressão acompanha nível + ruído
   const p = 1 + (nv/100)*4 + (Math.random()*0.3-0.15);
   writeNode("ns=2;s=Pressao", Math.round(p*100)/100);
-  // aquecedor empurra a temperatura (sobre o valor do sensor real)
+  // aquecedor empurra a temperatura (sobre o valor do sensor real),
+  // exceto quando o operador está controlando a temperatura manualmente
+  const tempManual = sensors[0] && sensors[0].manual;
   const t = server.nodes["ns=2;s=Temp_Forno"];
-  if(aquece){ writeNode("ns=2;s=Temp_Forno", Math.round((t.val+0.4)*10)/10); }
+  if(aquece && !tempManual){ writeNode("ns=2;s=Temp_Forno", Math.round((t.val+0.4)*10)/10); }
 }
 
 /* =========================================================================
@@ -986,6 +1103,40 @@ function bindControls(){
     document.getElementById("scanRate").textContent = scanRate;
     startLoop();
   });
+
+  // ---- controles manuais dos sensores ----
+  sensorGrid.addEventListener("click", (ev)=>{
+    const btn = ev.target.closest(".man-toggle");
+    if(!btn) return;
+    const i = +btn.dataset.man;
+    const s = sensors[i];
+    s.manual = !s.manual;
+    btn.setAttribute("aria-pressed", s.manual);
+    btn.classList.toggle("on", s.manual);
+    btn.textContent = s.manual ? "🌐 voltar ao automático" : "✋ controle manual";
+    const slider = sensorGrid.querySelector(`.man-slider[data-slider="${i}"]`);
+    if(slider) slider.hidden = !s.manual;
+    const stEl = sensorGrid.querySelector(`.sensor__status[data-i="${i}"]`);
+    if(s.manual){
+      // assume o valor atual do nó como ponto de partida
+      const cur = server.nodes[s.node].val;
+      const range = sensorGrid.querySelector(`input[data-range="${i}"]`);
+      if(range) range.value = cur;
+      applyManualSensor(i, cur);
+      stEl.className = "sensor__status man"; stEl.querySelector(".txt").textContent = "manual";
+      logEvent("sensor", s.node.split("=").pop(), `entrou em <b>controle manual</b> — API pausada`, "evt-sensor");
+    }else{
+      logEvent("sensor", s.node.split("=").pop(), `voltou ao modo <b>automático</b>`, "evt-sensor");
+      fetchSensors();
+    }
+  });
+  sensorGrid.addEventListener("input", (ev)=>{
+    const range = ev.target.closest("input[data-range]");
+    if(!range) return;
+    const i = +range.dataset.range;
+    if(!sensors[i].manual) return;
+    applyManualSensor(i, +range.value);
+  });
 }
 
 /* =========================================================================
@@ -998,6 +1149,7 @@ function boot(){
   buildClients();
   buildNodes();
   buildLadder();
+  buildManualGuide();
   buildSensors();
   wireSubscriptions();
   // valores iniciais nos nós
